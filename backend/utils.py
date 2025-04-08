@@ -75,7 +75,7 @@ def clean_gemini_response(response_text: str) -> str:
         cleaned = cleaned[:-len("```")].strip()
     return cleaned
 
-async def tag_pois_with_interests(pois: list, retries=3, delay=10, max_output_tokens=2000):
+async def tag_pois_with_interests(pois: list, retries=3, delay=15, max_output_tokens=4000):
     batch_size = 5
     interests_dicts = []
     
@@ -98,11 +98,11 @@ async def tag_pois_with_interests(pois: list, retries=3, delay=10, max_output_to
                 response = model.generate_content(
                     prompt,
                     generation_config={
-                        "max_output_tokens": max_output_tokens,
+                        "max_output_tokens": max_output_tokens,  # Increased to 4000
                         "temperature": 0.5
                     }
                 )
-                time.sleep(delay)
+                time.sleep(delay)  # Increased delay to 15 seconds
                 result = response.text
                 logging.info(f"Gemini response for batch tagging (raw, batch {i//batch_size + 1}): {result}")
                 
@@ -113,18 +113,27 @@ async def tag_pois_with_interests(pois: list, retries=3, delay=10, max_output_to
                     logging.warning(f"Incomplete Gemini response for batch {i//batch_size + 1}: {cleaned_result}")
                     raise ValueError("Gemini response is incomplete or not a JSON array")
                 
-                tagged_pois = json.loads(cleaned_result)
+                try:
+                    tagged_pois = json.loads(cleaned_result)
+                except json.JSONDecodeError as e:
+                    logging.error(f"Failed to parse Gemini response as JSON (batch {i//batch_size + 1}): {cleaned_result}")
+                    raise ValueError(f"Invalid JSON response from Gemini: {str(e)}")
+                
                 if len(tagged_pois) != len(batch):
-                    logging.warning(f"Expected {len(batch)} POIs in response, but got {len(tagged_pois)}")
+                    logging.warning(f"Expected {len(batch)} POIs in response, but got {len(tagged_pois)}: {tagged_pois}")
                     raise ValueError("Incomplete response: Number of tagged POIs does not match batch size")
                 
                 for tagged_poi in tagged_pois:
+                    if "name" not in tagged_poi or "category" not in tagged_poi or "interests" not in tagged_poi:
+                        logging.error(f"Invalid tagged POI in batch {i//batch_size + 1}: {tagged_poi}")
+                        raise ValueError("Tagged POI missing required fields")
+                    
                     raw_interests = tagged_poi.get("interests", {})
                     normalized_interests = {}
                     for interest, score in raw_interests.items():
                         normalized_interest = interest.replace("ArtAndCulture", "Art & Culture")
                         if normalized_interest in interests:
-                            normalized_interests[normalized_interest] = score
+                            normalized_interests[normalized_interest] = max(0.0, min(1.0, float(score)))  # Ensure score is between 0 and 1
                     interests_dicts.append(normalized_interests)
                 break
             except Exception as e:
@@ -140,7 +149,7 @@ async def tag_pois_with_interests(pois: list, retries=3, delay=10, max_output_to
                     time.sleep(delay * (attempt + 1))
     return interests_dicts
 
-async def tag_poi_with_interests(poi_name: str, category: str, retries=3, delay=10, max_output_tokens=200):
+async def tag_poi_with_interests(poi_name: str, category: str, retries=3, delay=15, max_output_tokens=400):
     for attempt in range(retries):
         try:
             model = genai.GenerativeModel("gemini-1.5-flash")
@@ -153,11 +162,11 @@ async def tag_poi_with_interests(poi_name: str, category: str, retries=3, delay=
             response = model.generate_content(
                 prompt,
                 generation_config={
-                    "max_output_tokens": max_output_tokens,
+                    "max_output_tokens": max_output_tokens,  # Increased to 400
                     "temperature": 0.5
                 }
             )
-            time.sleep(delay)
+            time.sleep(delay)  # Increased delay to 15 seconds
             result = response.text
             logging.info(f"Gemini response for individual tagging of '{poi_name}' (raw): {result}")
             
@@ -168,12 +177,17 @@ async def tag_poi_with_interests(poi_name: str, category: str, retries=3, delay=
                 logging.warning(f"Incomplete Gemini response for '{poi_name}': {cleaned_result}")
                 raise ValueError("Gemini response is incomplete or not a JSON object")
             
-            interests_dict = json.loads(cleaned_result)
+            try:
+                interests_dict = json.loads(cleaned_result)
+            except json.JSONDecodeError as e:
+                logging.error(f"Failed to parse Gemini response as JSON for '{poi_name}': {cleaned_result}")
+                raise ValueError(f"Invalid JSON response from Gemini: {str(e)}")
+            
             normalized_interests = {}
             for interest, score in interests_dict.items():
                 normalized_interest = interest.replace("ArtAndCulture", "Art & Culture")
                 if normalized_interest in interests:
-                    normalized_interests[normalized_interest] = score
+                    normalized_interests[normalized_interest] = max(0.0, min(1.0, float(score)))  # Ensure score is between 0 and 1
             return normalized_interests
         except Exception as e:
             logging.error(f"Error tagging POI '{poi_name}' with Gemini (attempt {attempt + 1}/{retries}): {str(e)}")
@@ -201,8 +215,17 @@ async def fetch_pois(city_iata: str):
     logging.info(f"Fetching POIs for city IATA: {city_iata} from MongoDB Atlas")
     pois = list(db.pois.find({"city": city_iata}))
     if pois:
-        logging.info(f"Found POIs in MongoDB Atlas for {city_iata}: {pois}")
-        return pois
+        # Remove duplicates based on POI name
+        seen_names = set()
+        unique_pois = []
+        for poi in pois:
+            if poi["name"] not in seen_names:
+                seen_names.add(poi["name"])
+                unique_pois.append(poi)
+            else:
+                logging.warning(f"Duplicate POI found in database for {city_iata}: {poi['name']}")
+        logging.info(f"Found POIs in MongoDB Atlas for {city_iata} (after deduplication): {unique_pois}")
+        return unique_pois
 
     logging.info(f"No POIs found in MongoDB Atlas for {city_iata}, tagging and storing")
     city_name = iata_to_city.get(city_iata)
@@ -215,18 +238,53 @@ async def fetch_pois(city_iata: str):
         logging.error(f"No POIs found for city {city_name} in hardcoded_pois")
         return []
 
-    logging.info(f"POIs to tag for {city_name}: {pois_data}")
+    # Remove duplicates from hardcoded_pois
+    seen_names = set()
+    unique_pois_data = []
+    for poi in pois_data:
+        if poi["name"] not in seen_names:
+            seen_names.add(poi["name"])
+            unique_pois_data.append(poi)
+        else:
+            logging.warning(f"Duplicate POI found in hardcoded_pois for {city_name}: {poi['name']}")
+    pois_data = unique_pois_data
+
+    logging.info(f"POIs to tag for {city_name} (after deduplication): {pois_data}")
     pois_to_tag = [{"name": poi.get("name"), "category": poi.get("category", "SIGHTSEEING")} for poi in pois_data]
     interests_dicts = await tag_pois_with_interests(pois_to_tag)
+
+    if not interests_dicts:
+        logging.error(f"Failed to tag POIs for {city_name}. Using fallback interests.")
+        interests_dicts = []
+        for poi in pois_data:
+            category = poi.get("category", "SIGHTSEEING")
+            fallback_mapping = {
+                "SIGHTSEEING": {"Historical": 0.8, "Art & Culture": 0.6},
+                "MUSEUM": {"Historical": 0.8, "Art & Culture": 0.8},
+                "PARK": {"Nature": 0.8, "Relaxing": 0.6},
+                "SHOPPING": {"Shopping": 0.8},
+                "ENTERTAINMENT": {"Entertainment": 0.8},
+                "BEACH": {"Nature": 0.8, "Relaxing": 0.7},
+                "SPORT": {"Sports": 0.8},
+                "ADVENTURE": {"Adventure": 0.8},
+                "HISTORIC": {"Historical": 0.9, "Art & Culture": 0.5},
+                "LANDMARK": {"Historical": 0.8, "Art & Culture": 0.6},
+                "MONUMENT": {"Historical": 0.9, "Art & Culture": 0.4}
+            }
+            fallback_interests = fallback_mapping.get(category, {"Entertainment": 0.5})
+            interests_dicts.append(fallback_interests)
 
     formatted_pois = []
     for poi, interests_dict in zip(pois_data, interests_dicts):
         name = poi.get("name")
-        formatted_pois.append({
+        formatted_poi = {
             "city": city_iata,
             "name": name,
-            "interests": interests_dict
-        })
+            "interests": interests_dict,
+            "lat": poi.get("lat"),
+            "lon": poi.get("lon")
+        }
+        formatted_pois.append(formatted_poi)
     logging.info(f"Formatted POIs for {city_iata}: {formatted_pois}")
 
     if formatted_pois:

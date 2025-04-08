@@ -97,7 +97,6 @@ def tag_pois_with_interests(pois: list, retries=3, delay=10, max_output_tokens=2
                         "temperature": 0.5
                     }
                 )
-                # Wait for the response to be fully generated
                 time.sleep(delay)
                 result = response.text
                 logging.info(f"Gemini response for batch tagging (raw, batch {i//batch_size + 1}): {result}")
@@ -105,13 +104,11 @@ def tag_pois_with_interests(pois: list, retries=3, delay=10, max_output_tokens=2
                 cleaned_result = clean_gemini_response(result)
                 logging.info(f"Gemini response for batch tagging (cleaned, batch {i//batch_size + 1}): {cleaned_result}")
                 
-                # Check if the response is a complete JSON array
                 if not cleaned_result or not (cleaned_result.strip().startswith("[") and cleaned_result.strip().endswith("]")):
                     logging.warning(f"Incomplete Gemini response for batch {i//batch_size + 1}: {cleaned_result}")
                     raise ValueError("Gemini response is incomplete or not a JSON array")
                 
                 tagged_pois = json.loads(cleaned_result)
-                # Verify the number of tagged POIs matches the batch size
                 if len(tagged_pois) != len(batch):
                     logging.warning(f"Expected {len(batch)} POIs in response, but got {len(tagged_pois)}")
                     raise ValueError("Incomplete response: Number of tagged POIs does not match batch size")
@@ -124,7 +121,7 @@ def tag_pois_with_interests(pois: list, retries=3, delay=10, max_output_tokens=2
                         if normalized_interest in interests:
                             normalized_interests[normalized_interest] = score
                     interests_dicts.append(normalized_interests)
-                break  # Success, move to next batch
+                break
             except Exception as e:
                 logging.error(f"Error batch tagging POIs (batch {i//batch_size + 1}, attempt {attempt + 1}/{retries}): {str(e)}")
                 if attempt == retries - 1:
@@ -135,7 +132,7 @@ def tag_pois_with_interests(pois: list, retries=3, delay=10, max_output_tokens=2
                         interests_dicts.append(interests_dict)
                         time.sleep(delay)
                 else:
-                    time.sleep(delay * (attempt + 1))  # Exponential backoff
+                    time.sleep(delay * (attempt + 1))
     return interests_dicts
 
 def tag_poi_with_interests(poi_name: str, category: str, retries=3, delay=10, max_output_tokens=200):
@@ -199,35 +196,114 @@ def tag_and_store_all_pois():
     logging.info(f"Hardcoded POIs: {hardcoded_pois}")
     
     for city_iata, city_name in iata_to_city.items():
-        logging.info(f"Tagging POIs for city IATA: {city_iata} (City: {city_name})")
+        logging.info(f"Processing POIs for city IATA: {city_iata} (City: {city_name})")
         pois_data = hardcoded_pois.get(city_name, [])
         if not pois_data:
             logging.error(f"No POIs found for city {city_name} in hardcoded_pois")
             continue
 
-        logging.info(f"POIs to tag for {city_name}: {pois_data}")
-        pois_to_tag = [{"name": poi.get("name"), "category": poi.get("category", "SIGHTSEEING")} for poi in pois_data]
-        interests_dicts = tag_pois_with_interests(pois_to_tag)
+        # Fetch existing POIs from the database
+        existing_pois = list(db.pois.find({"city": city_iata}))
+        existing_poi_dict = {poi["name"]: poi for poi in existing_pois}
+        logging.info(f"Existing POIs in database for {city_name}: {list(existing_poi_dict.keys())}")
 
+        # Identify new, updated, and deleted POIs
+        new_pois = []
+        updated_pois = []
+        unchanged_pois = []
+        hardcoded_poi_names = {poi["name"] for poi in pois_data}
+
+        for poi in pois_data:
+            poi_name = poi.get("name")
+            existing_poi = existing_poi_dict.get(poi_name)
+
+            if not existing_poi:
+                # New POI: not in the database
+                new_pois.append(poi)
+                logging.info(f"New POI detected: {poi_name}")
+            else:
+                # Check if the POI has changed (compare category, lat, lon)
+                existing_category = existing_poi.get("category", "SIGHTSEEING")
+                existing_lat = existing_poi.get("lat")
+                existing_lon = existing_poi.get("lon")
+                new_category = poi.get("category", "SIGHTSEEING")
+                new_lat = poi.get("lat")
+                new_lon = poi.get("lon")
+
+                if (existing_category != new_category or
+                    existing_lat != new_lat or
+                    existing_lon != new_lon):
+                    # Updated POI: details have changed
+                    updated_pois.append(poi)
+                    logging.info(f"Updated POI detected: {poi_name}")
+                else:
+                    # Unchanged POI: preserve existing interests
+                    unchanged_pois.append((poi, existing_poi["interests"]))
+                    logging.info(f"Unchanged POI: {poi_name}")
+
+        # Identify deleted POIs (in database but not in hardcoded_pois)
+        deleted_poi_names = set(existing_poi_dict.keys()) - hardcoded_poi_names
+        logging.info(f"Deleted POIs for {city_name}: {deleted_poi_names}")
+
+        # Tag new and updated POIs with interests
+        pois_to_tag = new_pois + updated_pois
+        interests_dicts = []
+        if pois_to_tag:
+            logging.info(f"POIs to tag for {city_name}: {[poi['name'] for poi in pois_to_tag]}")
+            pois_to_tag_for_gemini = [{"name": poi.get("name"), "category": poi.get("category", "SIGHTSEEING")} for poi in pois_to_tag]
+            interests_dicts = tag_pois_with_interests(pois_to_tag_for_gemini)
+        else:
+            logging.info(f"No new or updated POIs to tag for {city_name}")
+
+        # Prepare the final list of POIs to store
         formatted_pois = []
-        for poi, interests_dict in zip(pois_data, interests_dicts):
-            name = poi.get("name")
+        # Add new and updated POIs
+        for poi, interests_dict in zip(pois_to_tag, interests_dicts):
             formatted_pois.append({
                 "city": city_iata,
-                "name": name,
-                "interests": interests_dict
+                "name": poi.get("name"),
+                "category": poi.get("category", "SIGHTSEEING"),
+                "interests": interests_dict,
+                "lat": poi.get("lat"),
+                "lon": poi.get("lon")
             })
-        logging.info(f"Tagged POIs for {city_name}: {formatted_pois}")
+        # Add unchanged POIs (preserve existing interests)
+        for poi, interests_dict in unchanged_pois:
+            formatted_pois.append({
+                "city": city_iata,
+                "name": poi.get("name"),
+                "category": poi.get("category", "SIGHTSEEING"),
+                "interests": interests_dict,  # Preserve existing interests
+                "lat": poi.get("lat"),
+                "lon": poi.get("lon")
+            })
+        logging.info(f"Formatted POIs for {city_name}: {[poi['name'] for poi in formatted_pois]}")
 
-        if formatted_pois:
+        # Update the database
+        if formatted_pois or deleted_poi_names:
             try:
-                db.pois.delete_many({"city": city_iata})
-                db.pois.insert_many(formatted_pois)
-                logging.info(f"Stored tagged POIs for {city_iata} in MongoDB Atlas")
+                # Delete POIs that are no longer in hardcoded_pois
+                if deleted_poi_names:
+                    db.pois.delete_many({"city": city_iata, "name": {"$in": list(deleted_poi_names)}})
+                    logging.info(f"Deleted POIs for {city_iata}: {deleted_poi_names}")
+
+                # Insert or update POIs
+                for poi in formatted_pois:
+                    db.pois.update_one(
+                        {"city": city_iata, "name": poi["name"]},
+                        {"$set": {
+                            "category": poi["category"],
+                            "interests": poi["interests"],
+                            "lat": poi["lat"],
+                            "lon": poi["lon"]
+                        }},
+                        upsert=True
+                    )
+                logging.info(f"Updated/Inserted POIs for {city_iata} in MongoDB Atlas")
             except Exception as e:
-                logging.error(f"Error storing POIs for {city_iata} in MongoDB Atlas: {str(e)}")
+                logging.error(f"Error updating POIs for {city_iata} in MongoDB Atlas: {str(e)}")
         else:
-            logging.warning(f"No POIs to store for {city_iata}")
+            logging.info(f"No changes to POIs for {city_iata}, skipping database update")
 
 if __name__ == "__main__":
     try:
