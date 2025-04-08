@@ -4,5 +4,7 @@ pymongo
 requests
 boto3
 openai
+google-generativeai
 scikit-learn
 python-dotenv
+pydantic==2.11.2
