@@ -5,3 +5,4 @@ requests
 boto3
 openai
 scikit-learn
+python-dotenv
