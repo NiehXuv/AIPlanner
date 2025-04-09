@@ -1,0 +1,25 @@
+# data/cities.py
+city_coordinates = {
+    "Paris": {"iata": "PAR", "lat": 48.8566, "lon": 2.3522},
+    "Tokyo": {"iata": "TYO", "lat": 35.6762, "lon": 139.6503},
+    "Barcelona": {"iata": "BCN", "lat": 41.3851, "lon": 2.1734},
+    "New York": {"iata": "NYC", "lat": 40.7128, "lon": -74.0060},
+    "London": {"iata": "LON", "lat": 51.5074, "lon": -0.1278},
+    "Rome": {"iata": "ROM", "lat": 41.9028, "lon": 12.4964},
+    "Sydney": {"iata": "SYD", "lat": -33.8688, "lon": 151.2093},
+    "Dubai": {"iata": "DXB", "lat": 25.2048, "lon": 55.2708},
+    "Singapore": {"iata": "SIN", "lat": 1.3521, "lon": 103.8198},
+    "Cape Town": {"iata": "CPT", "lat": -33.9249, "lon": 18.4241},
+    "Rio de Janeiro": {"iata": "RIO", "lat": -22.9068, "lon": -43.1729},
+    "Bangkok": {"iata": "BKK", "lat": 13.7563, "lon": 100.5018},
+    "Istanbul": {"iata": "IST", "lat": 41.0082, "lon": 28.9784},
+    "Seoul": {"iata": "SEL", "lat": 37.5665, "lon": 126.9780},
+    "Amsterdam": {"iata": "AMS", "lat": 52.3676, "lon": 4.9041},
+    "Prague": {"iata": "PRG", "lat": 50.0755, "lon": 14.4378},
+    "Vienna": {"iata": "VIE", "lat": 48.2082, "lon": 16.3738},
+    "San Francisco": {"iata": "SFO", "lat": 37.7749, "lon": -122.4194},
+    "Kyoto": {"iata": "KIX", "lat": 35.0116, "lon": 135.7681},
+    "Marrakech": {"iata": "RAK", "lat": 31.6295, "lon": -7.9811},
+    "Edinburgh": {"iata": "EDI", "lat": 55.9533, "lon": -3.1883},
+    "Havana": {"iata": "HAV", "lat": 23.1136, "lon": -82.3666}
+}
