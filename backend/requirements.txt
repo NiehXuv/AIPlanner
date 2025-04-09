@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+amadeus
 pymongo
 requests
 boto3
