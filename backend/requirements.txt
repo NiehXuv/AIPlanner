@@ -9,3 +9,4 @@ google-generativeai
 scikit-learn
 python-dotenv
 pydantic==2.11.2
+tenacity
